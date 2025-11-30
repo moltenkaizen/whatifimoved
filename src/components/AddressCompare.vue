@@ -16,7 +16,6 @@
             <input
               type="text"
               v-model="currentAddress"
-              placeholder="123 Main St, Portland, OR"
               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             />
           </div>
@@ -28,7 +27,6 @@
             <input
               type="text"
               v-model="newAddress"
-              placeholder="456 Oak Ave, Portland, OR"
               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             />
           </div>
