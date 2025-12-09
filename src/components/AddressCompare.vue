@@ -8,6 +8,46 @@
         </div>
         <p class="text-gray-600 mb-8">Compare commute times from your current and potential new addresses</p>
 
+        <div class="mb-6">
+          <label class="block text-sm font-medium text-gray-700 mb-3">
+            Transportation Modes *
+          </label>
+          <div class="flex flex-wrap gap-4">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="transportModes.walking"
+                class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-2 focus:ring-indigo-500"
+              />
+              <span class="text-gray-700">🚶 Walking</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="transportModes.transit"
+                class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-2 focus:ring-indigo-500"
+              />
+              <span class="text-gray-700">🚇 Public Transportation</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="transportModes.driving"
+                class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-2 focus:ring-indigo-500"
+              />
+              <span class="text-gray-700">🚗 Driving</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="transportModes.bicycling"
+                class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-2 focus:ring-indigo-500"
+              />
+              <span class="text-gray-700">🚴 Bicycle</span>
+            </label>
+          </div>
+        </div>
+
         <div class="space-y-6">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-2">
@@ -107,15 +147,17 @@
                   </div>
                 </td>
                 <td class="py-4 px-4">
-                  <div class="text-sm">
-                    <div class="font-medium">🚗 {{ result.current.driveTime }} ({{ result.current.distance }})</div>
-                    <div class="text-gray-600">🚶 {{ result.current.walkTime }}</div>
+                  <div class="text-sm space-y-1">
+                    <div v-for="(modeData, modeName) in result.current" :key="modeName" class="font-medium">
+                      {{ modeData.emoji }} {{ modeData.time }} ({{ modeData.distance }})
+                    </div>
                   </div>
                 </td>
                 <td v-if="result.new" class="py-4 px-4">
-                  <div class="text-sm">
-                    <div class="font-medium">🚗 {{ result.new.driveTime }} ({{ result.new.distance }})</div>
-                    <div class="text-gray-600">🚶 {{ result.new.walkTime }}</div>
+                  <div class="text-sm space-y-1">
+                    <div v-for="(modeData, modeName) in result.new" :key="modeName" class="font-medium">
+                      {{ modeData.emoji }} {{ modeData.time }} ({{ modeData.distance }})
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -132,7 +174,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { MapPin, Plus, X, Navigation } from 'lucide-vue-next';
 import { useGoogleMaps } from '../composables/useGoogleMaps';
 
@@ -144,6 +186,22 @@ const destinations = ref([{ id: 1, label: '', address: '' }]);
 const results = ref(null);
 const loading = ref(false);
 const error = ref('');
+const transportModes = ref({
+  walking: false,
+  transit: false,
+  driving: true, // default checked
+  bicycling: false
+});
+
+// Check for API key on mount and warn developers
+onMounted(() => {
+  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  if (!apiKey || apiKey === 'your_api_key_here' || apiKey === 'YOUR_API_KEY_HERE') {
+    console.warn('⚠️  Google Maps API key not configured!');
+    console.info('To fix: Add VITE_GOOGLE_MAPS_API_KEY to your .env file and restart the dev server.');
+    console.info('See .env.example for details.');
+  }
+});
 
 const addDestination = () => {
   destinations.value.push({ id: Date.now(), label: '', address: '' });
@@ -154,6 +212,13 @@ const removeDestination = (id) => {
 };
 
 const calculateDistances = async () => {
+  // Validate at least one transportation mode is selected
+  const hasSelectedMode = Object.values(transportModes.value).some(mode => mode);
+  if (!hasSelectedMode) {
+    error.value = 'Please select at least one transportation mode';
+    return;
+  }
+
   if (!currentAddress.value || destinations.value.some(d => !d.address)) {
     error.value = 'Please fill in all addresses';
     return;
@@ -173,56 +238,82 @@ const calculateDistances = async () => {
 
     const destAddresses = destinations.value.map(d => d.address);
 
-    const request = {
-      origins: origins,
-      destinations: destAddresses,
-      travelMode: google.maps.TravelMode.DRIVING,
-      unitSystem: google.maps.UnitSystem.IMPERIAL,
+    // Map mode names to Google Maps API constants and emojis
+    const modeConfig = {
+      walking: { api: google.maps.TravelMode.WALKING, emoji: '🚶', label: 'Walking' },
+      transit: { api: google.maps.TravelMode.TRANSIT, emoji: '🚇', label: 'Transit' },
+      driving: { api: google.maps.TravelMode.DRIVING, emoji: '🚗', label: 'Driving' },
+      bicycling: { api: google.maps.TravelMode.BICYCLING, emoji: '🚴', label: 'Bicycling' }
     };
 
-    service.getDistanceMatrix(request, async (response, status) => {
-      if (status === 'OK') {
-        // Get walking times too
-        const walkRequest = {
-          ...request,
-          travelMode: google.maps.TravelMode.WALKING,
+    // Get selected modes
+    const selectedModes = Object.entries(transportModes.value)
+      .filter(([_, isSelected]) => isSelected)
+      .map(([mode, _]) => mode);
+
+    // Make API calls for each selected mode
+    const modePromises = selectedModes.map(mode => {
+      return new Promise((resolve, reject) => {
+        const request = {
+          origins: origins,
+          destinations: destAddresses,
+          travelMode: modeConfig[mode].api,
+          unitSystem: google.maps.UnitSystem.IMPERIAL,
         };
 
-        service.getDistanceMatrix(walkRequest, (walkResponse, walkStatus) => {
-          if (walkStatus === 'OK') {
-            const resultData = destinations.value.map((dest, idx) => {
-              const currentDrive = response.rows[0].elements[idx];
-              const currentWalk = walkResponse.rows[0].elements[idx];
-              const newDrive = newAddress.value ? response.rows[1].elements[idx] : null;
-              const newWalk = newAddress.value ? walkResponse.rows[1].elements[idx] : null;
-
-              return {
-                label: dest.label || `Destination ${idx + 1}`,
-                address: dest.address,
-                current: {
-                  driveTime: currentDrive.status === 'OK' ? currentDrive.duration.text : 'N/A',
-                  distance: currentDrive.status === 'OK' ? currentDrive.distance.text : 'N/A',
-                  walkTime: currentWalk.status === 'OK' ? currentWalk.duration.text : 'N/A',
-                },
-                new: newAddress.value ? {
-                  driveTime: newDrive && newDrive.status === 'OK' ? newDrive.duration.text : 'N/A',
-                  distance: newDrive && newDrive.status === 'OK' ? newDrive.distance.text : 'N/A',
-                  walkTime: newWalk && newWalk.status === 'OK' ? newWalk.duration.text : 'N/A',
-                } : null
-              };
-            });
-
-            results.value = resultData;
-            loading.value = false;
+        service.getDistanceMatrix(request, (response, status) => {
+          if (status === 'OK') {
+            resolve({ mode, response });
+          } else {
+            reject(new Error(`Failed to get ${mode} data`));
           }
         });
-      } else {
-        error.value = 'Failed to calculate distances. Please check your addresses.';
-        loading.value = false;
-      }
+      });
     });
+
+    // Wait for all API calls to complete
+    const modeResults = await Promise.all(modePromises);
+
+    // Process results
+    const resultData = destinations.value.map((dest, idx) => {
+      const result = {
+        label: dest.label || `Destination ${idx + 1}`,
+        address: dest.address,
+        current: {},
+        new: newAddress.value ? {} : null
+      };
+
+      // Add data for each selected mode
+      modeResults.forEach(({ mode, response }) => {
+        const currentElement = response.rows[0].elements[idx];
+        const config = modeConfig[mode];
+
+        result.current[mode] = {
+          time: currentElement.status === 'OK' ? currentElement.duration.text : 'N/A',
+          distance: currentElement.status === 'OK' ? currentElement.distance.text : 'N/A',
+          emoji: config.emoji,
+          label: config.label
+        };
+
+        if (newAddress.value) {
+          const newElement = response.rows[1].elements[idx];
+          result.new[mode] = {
+            time: newElement.status === 'OK' ? newElement.duration.text : 'N/A',
+            distance: newElement.status === 'OK' ? newElement.distance.text : 'N/A',
+            emoji: config.emoji,
+            label: config.label
+          };
+        }
+      });
+
+      return result;
+    });
+
+    results.value = resultData;
+    loading.value = false;
   } catch (err) {
-    error.value = 'An error occurred. Please try again.';
+    console.error('Error calculating distances:', err);
+    error.value = err.message || 'Failed to calculate distances. Please check your addresses.';
     loading.value = false;
   }
 };
