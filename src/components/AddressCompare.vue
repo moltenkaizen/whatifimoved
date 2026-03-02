@@ -2,9 +2,31 @@
   <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-4 md:p-8">
     <div class="max-w-6xl mx-auto">
       <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8 mb-6">
-        <div class="flex items-center gap-3 mb-6">
-          <Navigation class="w-8 h-8 text-indigo-600" />
-          <h1 class="text-3xl font-bold text-gray-900">Address Comparison Tool</h1>
+        <div class="flex items-center justify-between gap-3 mb-6">
+          <div 
+            class="flex items-center gap-3 cursor-pointer group transition-transform hover:scale-[1.02]"
+            @dragover.prevent="dragOver = true"
+            @dragleave.prevent="dragOver = false"
+            @drop.prevent="handleDrop"
+          >
+            <Navigation 
+              class="w-8 h-8 text-indigo-600 transition-all duration-300" 
+              :class="{ 'text-green-500 scale-125 rotate-12': dragOver }"
+            />
+            <h1 
+              class="text-3xl font-bold text-gray-900 select-none transition-colors duration-300"
+              :class="{ 'text-green-600': dragOver }"
+            >
+              Address Comparison Tool
+            </h1>
+          </div>
+          <button 
+            @click="exportData" 
+            title="Download addresses as JSON"
+            class="p-2 text-gray-400 hover:text-indigo-600 transition-colors"
+          >
+            <Download class="w-6 h-6" />
+          </button>
         </div>
         <p class="text-gray-600 mb-8">Compare commute times from your current and potential new addresses</p>
 
@@ -174,11 +196,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
-import { MapPin, Plus, X, Navigation } from 'lucide-vue-next';
+import { ref, onMounted, watch } from 'vue';
+import { MapPin, Plus, X, Navigation, Download } from 'lucide-vue-next';
 import { useGoogleMaps } from '../composables/useGoogleMaps';
 
 const { loadGoogleMaps } = useGoogleMaps();
+
+const STORAGE_KEY = 'whatifimoved_data';
 
 const currentAddress = ref('');
 const newAddress = ref('');
@@ -186,25 +210,64 @@ const destinations = ref([{ id: 1, label: '', address: '' }]);
 const results = ref(null);
 const loading = ref(false);
 const error = ref('');
+const dragOver = ref(false);
 const transportModes = ref({
   walking: false,
   transit: false,
-  driving: true, // default checked
+  driving: true,
   bicycling: false
 });
 
-// Check for API key on mount and warn developers
-onMounted(() => {
-  const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-  if (!apiKey || apiKey === 'your_api_key_here' || apiKey === 'YOUR_API_KEY_HERE') {
-    console.warn('⚠️  Google Maps API key not configured!');
-    console.info('To fix: Add VITE_GOOGLE_MAPS_API_KEY to your .env file and restart the dev server.');
-    console.info('See .env.example for details.');
+// Persistence logic
+const loadFromStorage = () => {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    try {
+      const data = JSON.parse(saved);
+      applyData(data);
+    } catch (e) {
+      console.error('Failed to load from storage', e);
+    }
   }
-});
+};
+
+const applyData = (data) => {
+  if (data.currentAddress !== undefined) currentAddress.value = data.currentAddress;
+  if (data.newAddress !== undefined) newAddress.value = data.newAddress;
+  if (data.destinations) destinations.value = data.destinations;
+  if (data.transportModes) transportModes.value = { ...transportModes.value, ...data.transportModes };
+};
+
+watch([currentAddress, newAddress, destinations, transportModes], () => {
+  const data = {
+    currentAddress: currentAddress.value,
+    newAddress: newAddress.value,
+    destinations: destinations.value,
+    transportModes: transportModes.value
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}, { deep: true });
+
+// File Handling
+const handleDrop = (e) => {
+  dragOver.value = false;
+  const file = e.dataTransfer.files[0];
+  if (file && file.type === 'application/json') {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        applyData(data);
+      } catch (err) {
+        error.value = 'Failed to parse JSON file';
+      }
+    };
+    reader.readAsText(file);
+  }
+};
 
 const addDestination = () => {
-  destinations.value.push({ id: Date.now(), label: '', address: '' });
+    destinations.value.push({ id: Date.now(), label: '', address: '' });
 };
 
 const removeDestination = (id) => {
@@ -212,7 +275,6 @@ const removeDestination = (id) => {
 };
 
 const calculateDistances = async () => {
-  // Validate at least one transportation mode is selected
   const hasSelectedMode = Object.values(transportModes.value).some(mode => mode);
   if (!hasSelectedMode) {
     error.value = 'Please select at least one transportation mode';
@@ -228,17 +290,12 @@ const calculateDistances = async () => {
   error.value = '';
 
   try {
-    // Load Google Maps API first
     await loadGoogleMaps();
-
     const service = new google.maps.DistanceMatrixService();
-
     const origins = [currentAddress.value];
     if (newAddress.value) origins.push(newAddress.value);
 
     const destAddresses = destinations.value.map(d => d.address);
-
-    // Map mode names to Google Maps API constants and emojis
     const modeConfig = {
       walking: { api: google.maps.TravelMode.WALKING, emoji: '🚶', label: 'Walking' },
       transit: { api: google.maps.TravelMode.TRANSIT, emoji: '🚇', label: 'Transit' },
@@ -246,36 +303,27 @@ const calculateDistances = async () => {
       bicycling: { api: google.maps.TravelMode.BICYCLING, emoji: '🚴', label: 'Bicycling' }
     };
 
-    // Get selected modes
     const selectedModes = Object.entries(transportModes.value)
       .filter(([_, isSelected]) => isSelected)
       .map(([mode, _]) => mode);
 
-    // Make API calls for each selected mode
     const modePromises = selectedModes.map(mode => {
       return new Promise((resolve, reject) => {
-        const request = {
-          origins: origins,
+        service.getDistanceMatrix({
+          origins,
           destinations: destAddresses,
           travelMode: modeConfig[mode].api,
           unitSystem: google.maps.UnitSystem.IMPERIAL,
-        };
-
-        service.getDistanceMatrix(request, (response, status) => {
-          if (status === 'OK') {
-            resolve({ mode, response });
-          } else {
-            reject(new Error(`Failed to get ${mode} data`));
-          }
+        }, (response, status) => {
+          if (status === 'OK') resolve({ mode, response });
+          else reject(new Error(`Failed to get ${mode} data`));
         });
       });
     });
 
-    // Wait for all API calls to complete
     const modeResults = await Promise.all(modePromises);
 
-    // Process results
-    const resultData = destinations.value.map((dest, idx) => {
+    results.value = destinations.value.map((dest, idx) => {
       const result = {
         label: dest.label || `Destination ${idx + 1}`,
         address: dest.address,
@@ -283,11 +331,9 @@ const calculateDistances = async () => {
         new: newAddress.value ? {} : null
       };
 
-      // Add data for each selected mode
       modeResults.forEach(({ mode, response }) => {
         const currentElement = response.rows[0].elements[idx];
         const config = modeConfig[mode];
-
         result.current[mode] = {
           time: currentElement.status === 'OK' ? currentElement.duration.text : 'N/A',
           distance: currentElement.status === 'OK' ? currentElement.distance.text : 'N/A',
@@ -305,20 +351,16 @@ const calculateDistances = async () => {
           };
         }
       });
-
       return result;
     });
-
-    results.value = resultData;
-    loading.value = false;
   } catch (err) {
-    console.error('Error calculating distances:', err);
-    error.value = err.message || 'Failed to calculate distances. Please check your addresses.';
+    error.value = err.message || 'Failed to calculate distances.';
+  } finally {
     loading.value = false;
   }
 };
 </script>
 
 <style scoped>
-/* Tailwind classes are used inline, no additional styles needed */
+/* Tailwind classes are used inline */
 </style>
